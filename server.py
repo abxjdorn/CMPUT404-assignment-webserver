@@ -29,6 +29,21 @@ from socketio import SocketBuffer
 # try: curl -v -X GET http://127.0.0.1:8080/
 
 
+class Request:
+    """ Data class representing a request. """
+    def __init__(self, method, path, http_version, headers):
+        self.method = method
+        self.path = path
+        self.http_version = http_version
+        self.headers = headers
+
+
+    def __str__(self):
+        return (f'{self.method} '
+                f'{self.path} '
+                f'HTTP/{self.http_version[0]}.{self.http_version[1]}\n'
+                + '\n'.join(f'{k}: {v}' for k, v in self.headers.items()))
+
 
 class MyWebServer(socketserver.BaseRequestHandler):
     """ Web server. """
@@ -72,6 +87,7 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
         try:
             req = self._read_request()
+            print(req)
 
             self._send_line('HTTP/1.1 503 Service Unavailable')
         except self.WebServerException as e:
@@ -123,11 +139,7 @@ class MyWebServer(socketserver.BaseRequestHandler):
             raise self.WebServerException(505, 'HTTP Version Not Supported')
 
         # Read and parse the headers
-        headers = dict()
-        while True:
-            header, value = self._read_header()
-            if header is None: break # end of headers
-            headers[header] = value
+        headers = self._read_headers()
 
         return Request(method, path, version, headers)
 
@@ -158,6 +170,38 @@ class MyWebServer(socketserver.BaseRequestHandler):
         ver_maj, ver_min = self.parse_http_ver(http_ver)
 
         return method, path, (ver_maj, ver_min)
+
+
+    def _read_headers(self):
+        """ Reads and parses a block of header from the socket.
+
+        Returns dict mapping header names (str) to values (str).
+        Raises an appropriate WebServerException on parsing error.
+        """
+
+        headers = dict()
+        last_header = None
+        while True:
+            # Get the next line
+            headerLine = self._recv_line()
+            if len(headerLine.strip()) == 0:
+                # end of headers
+                return headers
+            if headerLine.startswith(' ') or headerLine.startswith('\t'):
+                # this is a continuation line
+                if last_header is None: raise self.BAD_REQUEST
+                headers[last_header] += ' ' + headerLine.strip()
+            else:
+                parts = headerLine.split(':', 1)
+                if len(parts) != 2: raise self.BAD_REQUEST
+                last_header, value = parts
+                if last_header in headers:
+                    # duplicate header: merge the values
+                    headers[last_header] += ',' + value.strip()
+                else:
+                    # entirely new header
+                    headers[last_header] = value.strip()
+
 
 
 if __name__ == "__main__":
