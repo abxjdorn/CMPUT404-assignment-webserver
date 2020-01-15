@@ -1,7 +1,9 @@
 #  coding: utf-8 
 import socketserver
+from socketio import SocketBuffer
 
-# Copyright 2013 Abram Hindle, Eddie Antonio Santos
+
+# Copyright 2020 Abram Hindle, Eddie Antonio Santos, John Dorn
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,11 +30,37 @@ import socketserver
 
 
 class MyWebServer(socketserver.BaseRequestHandler):
-    
+    """ Web server. """
+
     def handle(self):
-        self.data = self.request.recv(1024).strip()
-        print ("Got a request of: %s\n" % self.data)
-        self.request.sendall(bytearray("OK",'utf-8'))
+        self.sio = SocketBuffer(self.request)
+        req = self._parse_request()
+
+        self._send_line('HTTP/1.1 404 Not Found')
+        self._send_line()
+        #self.data = self.request.recv(1024).strip()
+        #print ("Got a request of: %s\n" % self.data)
+        #self.request.sendall(bytearray("OK",'utf-8'))
+
+
+    def _send(self, text):
+        print('> ' + text.strip('\n'))
+        self.sio.write(text)
+
+
+    def _recv_line(self):
+        text = self.sio.readline()
+        print ('< ' + text.strip('\n'))
+        return text
+
+
+    def _send_line(self, text=''):
+        self._send(text + '\n')
+
+
+    def _parse_request(self):
+        self._recv_line()
+
 
 if __name__ == "__main__":
     HOST, PORT = "localhost", 8080
