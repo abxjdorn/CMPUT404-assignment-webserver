@@ -1,6 +1,6 @@
 #  coding: utf-8 
 import socketserver
-import os
+import os, socket
 from socketio import SocketBuffer
 
 
@@ -47,7 +47,7 @@ class Request:
                 f'{self.path} '
                 f'HTTP/{self.http_version[0]}.{self.http_version[1]}\n'
                 + '\n'.join(f'{k}: {v}' for k, v in self.headers.items())
-                + '\n')
+                + '\n\n')
 
 
 class Response:
@@ -55,6 +55,7 @@ class Response:
     MOVED_PERMANENTLY = 301
     BAD_REQUEST = 400
     NOT_FOUND = 404
+    METHOD_NOT_ALLOWED = 405
     INTERNAL_SERVER_ERROR = 500
     VERSION_NOT_SUPPORTED = 505
 
@@ -63,6 +64,7 @@ class Response:
             MOVED_PERMANENTLY: 'Moved Permanently',
             BAD_REQUEST: 'Bad Request',
             NOT_FOUND: 'Not Found',
+            METHOD_NOT_ALLOWED: 'Method Not Allowed',
             INTERNAL_SERVER_ERROR: 'Internal Server Error',
             VERSION_NOT_SUPPORTED: 'HTTP Version Not Supported'
     }
@@ -80,7 +82,7 @@ class Response:
     def __str__(self):
         return (f'HTTP/1.1 {self.code} {self.STATUS_MESSAGES[self.code]}\n'
                 + '\n'.join(f'{k}: {v}' for k, v in self.headers.items())
-                + '\n' + self.body)
+                + '\n\n' + self.body)
 
 
 
@@ -119,6 +121,16 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
 
     @staticmethod
+    def guess_content_type(filename):
+        if filename.endswith('.html'):
+            return 'text/html'
+        elif filename.endswith('.css'):
+            return 'text/css'
+        else:
+            return 'text/plain'
+
+
+    @staticmethod
     def _bad_request():
         raise MyWebServer.WebServerException(Response.BAD_REQUEST)
 
@@ -151,6 +163,14 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
 
     def _handle_request(self, req):
+        if req.method not in ['GET', 'HEAD']:
+            return Response(Response.METHOD_NOT_ALLOWED)
+
+        # Include the body if method is 'GET', but not if it is 'HEAD'
+        includeBody = (req.method == 'GET')
+
+
+        # Check the path...
         if not req.path.startswith('/'):
             # only local, absolute URLs are valid
             return Response(Response.NOT_FOUND)
@@ -163,6 +183,8 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
         file_path = os.path.join(WEB_ROOT, local_path)
 
+
+        # Serve the content...
         if os.path.isdir(file_path):
             # this is a directory
             if not req.path.endswith('/'):
@@ -180,13 +202,17 @@ class MyWebServer(socketserver.BaseRequestHandler):
         body = f.read()
         f.close()
 
-        resp = Response(Response.OK, body=body)
+        file_name = os.path.basename(file_path)
+        content_type = self.guess_content_type(file_name)
+
+        resp = Response(Response.OK,
+                headers={'Content-Type': f'{content_type}; charset=utf-8'},
+                body=body if includeBody else '')
         return resp
 
 
     def _finish(self):
         self._send_line()
-        self.request.close()
 
 
     def _send(self, text):
