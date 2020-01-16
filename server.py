@@ -99,6 +99,10 @@ class MyWebServer(socketserver.BaseRequestHandler):
             self.resp = Response(code)
 
 
+    class ClientDisconnected(Exception):
+        pass
+
+
     @staticmethod
     def parse_http_ver(http_ver):
         """ Parse the HTTP version into major and minor parts.
@@ -150,16 +154,13 @@ class MyWebServer(socketserver.BaseRequestHandler):
             self._send(str(resp))
         except self.WebServerException as e:
             self._send(str(e.resp))
+        except self.ClientDisconnected:
+            # nothing to do, really
+            pass
         except:
             # Try to send a valid response even if something went wrong
             self._send_line('HTTP/1.1 500 Internal Server Error')
             raise
-        finally:
-            self._finish()
-
-        #self.data = self.request.recv(1024).strip()
-        #print ("Got a request of: %s\n" % self.data)
-        #self.request.sendall(bytearray("OK",'utf-8'))
 
 
     def _handle_request(self, req):
@@ -211,19 +212,17 @@ class MyWebServer(socketserver.BaseRequestHandler):
         return resp
 
 
-    def _finish(self):
-        self._send_line()
-
-
     def _send(self, text):
         print('> ' + text.strip('\n'))
         self.sio.write(text)
 
 
     def _recv_line(self):
-        text = self.sio.readline().rstrip('\r\n')
-        print ('< ' + text)
-        return text
+        text = self.sio.readline()
+        if not text: raise self.ClientDisconnected()
+        stripped = text.rstrip('\r\n')
+        print ('< ' + stripped)
+        return stripped
 
 
     def _send_line(self, text=''):
