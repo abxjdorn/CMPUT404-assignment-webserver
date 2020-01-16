@@ -1,5 +1,6 @@
 #  coding: utf-8 
 import socketserver
+import os
 from socketio import SocketBuffer
 
 
@@ -29,6 +30,9 @@ from socketio import SocketBuffer
 # try: curl -v -X GET http://127.0.0.1:8080/
 
 
+WEB_ROOT = 'www/'
+
+
 class Request:
     """ Data class representing a request. """
     def __init__(self, method, path, http_version, headers):
@@ -42,7 +46,42 @@ class Request:
         return (f'{self.method} '
                 f'{self.path} '
                 f'HTTP/{self.http_version[0]}.{self.http_version[1]}\n'
-                + '\n'.join(f'{k}: {v}' for k, v in self.headers.items()))
+                + '\n'.join(f'{k}: {v}' for k, v in self.headers.items())
+                + '\n')
+
+
+class Response:
+    OK = 200
+    MOVED_PERMANENTLY = 301
+    BAD_REQUEST = 400
+    NOT_FOUND = 404
+    INTERNAL_SERVER_ERROR = 500
+    VERSION_NOT_SUPPORTED = 505
+
+    STATUS_MESSAGES = {
+            OK: 'OK',
+            MOVED_PERMANENTLY: 'Moved Permanently',
+            BAD_REQUEST: 'Bad Request',
+            NOT_FOUND: 'Not Found',
+            INTERNAL_SERVER_ERROR: 'Internal Server Error',
+            VERSION_NOT_SUPPORTED: 'HTTP Version Not Supported'
+    }
+
+    def __init__(self, code, *, headers=None, body=''):
+        self.code = code
+        self.body = body
+        self.headers = headers or dict()
+
+
+    def add_header(self, key, value):
+        self.headers[key] = value
+
+
+    def __str__(self):
+        return (f'HTTP/1.1 {self.code} {self.STATUS_MESSAGES[self.code]}\n'
+                + '\n'.join(f'{k}: {v}' for k, v in self.headers.items())
+                + '\n' + self.body)
+
 
 
 class MyWebServer(socketserver.BaseRequestHandler):
@@ -52,13 +91,10 @@ class MyWebServer(socketserver.BaseRequestHandler):
         """ Exception causing the server to stop processing and
             respond with the specified status code.
         """
-        def __init__(self, code, message):
-            super().__init__(f'HTTP {code} {message}')
-            self.code = code
-            self.message = message
-
-
-    BAD_REQUEST = WebServerException(400, 'Bad Request')
+        def __init__(self, code):
+            super().__init__(
+                    f'HTTP {code} {Response.STATUS_MESSAGES[message]}')
+            self.resp = Response(code)
 
 
     @staticmethod
@@ -71,15 +107,25 @@ class MyWebServer(socketserver.BaseRequestHandler):
         (including the part before the slash)
         """
         slash_split = http_ver.split('/')
-        if len(slash_split) != 2: raise self.BAD_REQUEST
-        if slash_split[0] != 'HTTP': raise self.BAD_REQUEST
+        if len(slash_split) != 2: MyWebServer._bad_request()
+        if slash_split[0] != 'HTTP': MyWebServer._bad_request()
 
         dot_split = slash_split[1].split('.')
-        if len(dot_split) != 2: raise self.BAD_REQUEST
+        if len(dot_split) != 2: MyWebServer._bad_request()
         try:
             return int(dot_split[0]), int(dot_split[1])
         except ValueError:
-            raise self.BAD_REQUEST
+            MyWebServer._bad_request()
+
+
+    @staticmethod
+    def _bad_request():
+        raise MyWebServer.WebServerException(Response.BAD_REQUEST)
+
+
+    @staticmethod
+    def _not_found():
+        raise MyWebServer.WebServerException(Response.NOT_FOUND)
 
 
     def handle(self):
@@ -87,11 +133,11 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
         try:
             req = self._read_request()
-            print(req)
+            resp = self._handle_request(req)
 
-            self._send_line('HTTP/1.1 503 Service Unavailable')
+            self._send(str(resp))
         except self.WebServerException as e:
-            self._send_line(f'HTTP/1.1 {e.code} {e.message}')
+            self._send(str(e.resp))
         except:
             # Try to send a valid response even if something went wrong
             self._send_line('HTTP/1.1 500 Internal Server Error')
@@ -102,6 +148,40 @@ class MyWebServer(socketserver.BaseRequestHandler):
         #self.data = self.request.recv(1024).strip()
         #print ("Got a request of: %s\n" % self.data)
         #self.request.sendall(bytearray("OK",'utf-8'))
+
+
+    def _handle_request(self, req):
+        if not req.path.startswith('/'):
+            # only local, absolute URLs are valid
+            return Response(Response.NOT_FOUND)
+
+        # Determine the file path indicated by the URL
+        local_path = os.path.normpath(req.path[1:])
+        if local_path.startswith('/') or local_path.startswith('..'):
+            # don't allow rising above the path root
+            return Response(Response.NOT_FOUND)
+
+        file_path = os.path.join(WEB_ROOT, local_path)
+
+        if os.path.isdir(file_path):
+            # this is a directory
+            if not req.path.endswith('/'):
+                return Response(Response.MOVED_PERMANENTLY,
+                        headers={'Location': req.path + '/'})
+            else:
+                file_path = os.path.join(file_path, 'index.html')
+
+        if not os.path.exists(file_path):
+            # straightforwardly not found
+            return Response(Response.NOT_FOUND)
+
+        # this is a file: return it
+        f = open(file_path)
+        body = f.read()
+        f.close()
+
+        resp = Response(Response.OK, body=body)
+        return resp
 
 
     def _finish(self):
@@ -136,7 +216,7 @@ class MyWebServer(socketserver.BaseRequestHandler):
         # Read and parse the request line
         method, path, version = self._read_reqline()
         if version != (1, 1):
-            raise self.WebServerException(505, 'HTTP Version Not Supported')
+            raise self.WebServerException(Response.VERSION_NOT_SUPPORTED)
 
         # Read and parse the headers
         headers = self._read_headers()
@@ -163,7 +243,7 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
         # Split into url, path, http version
         parts = requestLine.split(' ')
-        if len(parts) != 3: raise self.BAD_REQUEST
+        if len(parts) != 3: self._bad_request()
         method, path, http_ver = parts
 
         # Parse the http version
@@ -189,11 +269,11 @@ class MyWebServer(socketserver.BaseRequestHandler):
                 return headers
             if headerLine.startswith(' ') or headerLine.startswith('\t'):
                 # this is a continuation line
-                if last_header is None: raise self.BAD_REQUEST
+                if last_header is None: self._bad_request()
                 headers[last_header] += ' ' + headerLine.strip()
             else:
                 parts = headerLine.split(':', 1)
-                if len(parts) != 2: raise self.BAD_REQUEST
+                if len(parts) != 2: self._bad_request()
                 last_header, value = parts
                 if last_header in headers:
                     # duplicate header: merge the values
