@@ -1,6 +1,9 @@
 #  coding: utf-8 
 import socketserver
-import os, socket
+import sys, os
+
+import myhttp
+from myhttp import Request, Response, HTTPVersion
 from socketio import SocketBuffer
 
 
@@ -33,220 +36,186 @@ from socketio import SocketBuffer
 WEB_ROOT = 'www/'
 
 
-class Request:
-    """ Data class representing a request. """
-    def __init__(self, method, path, http_version, headers):
-        self.method = method
-        self.path = path
-        self.http_version = http_version
-        self.headers = headers
+class MyHTTPHandler:
+    """ HTTP request handler. """
+
+    def __init__(self, web_root):
+        """ Creates a handler which will serve files from the
+            specified directory.
+
+        web_root: str -- local path to web root directory
+                         (files will be served from here)
+        """
+        self.web_root = web_root
 
 
-    def __str__(self):
-        return (f'{self.method} '
-                f'{self.path} '
-                f'HTTP/{self.http_version[0]}.{self.http_version[1]}\n'
-                + '\n'.join(f'{k}: {v}' for k, v in self.headers.items())
-                + '\n\n')
+    def handle_request(self, req):
+        """ Handle an HTTP request.
+
+        req: Request --- Request object specifying the HTTP request
+        Returns a Response object specifying the HTTP response.
+        """
+
+        assert isinstance(req, Request)
+
+        # Respond with 505 to unsupported methods
+        if req.method not in ['GET', 'HEAD']:
+            return Response(Response.METHOD_NOT_ALLOWED)
+
+        # Fail if the URL is not a local, absolute path
+        if not req.path.startswith('/'):
+            return Response(Response.NOT_FOUND)
+
+        # Normalize the request path to determine the relative file path
+        rel_path = os.path.normpath(req.path[1:])
+
+        # Reject requests that aren't inside the relative root
+        if rel_path.startswith('/') or rel_path.startswith('..'):
+            return Response(Response.NOT_FOUND)
+
+        # Generate the local filesystem path corresponding to the request
+        local_path = os.path.join(self.web_root, rel_path)
+
+        # Redirect 'open' directory paths to their 'closed' equivalents
+        if os.path.isdir(local_path) and not req.path.endswith('/'):
+            return Response(Response.MOVED_PERMANENTLY,
+                    headers={'Location': req.path + '/'})
+
+        # Serve the content
+        include_body = (req.method == 'GET')
+        return self._serve_path(local_path, include_body)
 
 
-class Response:
-    OK = 200
-    MOVED_PERMANENTLY = 301
-    BAD_REQUEST = 400
-    NOT_FOUND = 404
-    METHOD_NOT_ALLOWED = 405
-    INTERNAL_SERVER_ERROR = 500
-    VERSION_NOT_SUPPORTED = 505
+    def _serve_path(self, path, include_body):
+        """ Generate a response appropriate for a specified local path.
 
-    STATUS_MESSAGES = {
-            OK: 'OK',
-            MOVED_PERMANENTLY: 'Moved Permanently',
-            BAD_REQUEST: 'Bad Request',
-            NOT_FOUND: 'Not Found',
-            METHOD_NOT_ALLOWED: 'Method Not Allowed',
-            INTERNAL_SERVER_ERROR: 'Internal Server Error',
-            VERSION_NOT_SUPPORTED: 'HTTP Version Not Supported'
-    }
+        path: str -- local path relative to the web root
+        include_body: bool -- whether to include the body
 
-    def __init__(self, code, *, headers=None, body=''):
-        self.code = code
-        self.body = body
-        self.headers = headers or dict()
+        Returns a Response object appropriate for the path,
+        which might be a not-found response if no content exists.
 
+        If include_body is False, the body will be excluded from the Response
+        (ie. a HEAD request rather than a GET)
+        """
 
-    def add_header(self, key, value):
-        self.headers[key] = value
+        assert isinstance(path, str)
 
+        # Serve index.html from directories
+        if os.path.isdir(path):
+            path = os.path.join(path, 'index.html')
 
-    def __str__(self):
-        return (f'HTTP/1.1 {self.code} {self.STATUS_MESSAGES[self.code]}\n'
-                + '\n'.join(f'{k}: {v}' for k, v in self.headers.items())
-                + '\n\n' + self.body)
+        # Respond with 404 if the content doesn't exist
+        if not os.path.exists(path):
+            return Response(Response.NOT_FOUND)
 
+        # Read the content
+        if include_body:
+            f = open(path)
+            body = f.read()
+            f.close()
+        else:
+            body = ''
+
+        # Guess the content-type
+        file_name = os.path.basename(path)
+        content_type = myhttp.guess_content_type(file_name)
+
+        # Generate a response
+        return Response(Response.OK,
+                headers={'Content-Type': content_type},
+                body=body)
 
 
 class MyWebServer(socketserver.BaseRequestHandler):
     """ Web server. """
 
-    class WebServerException(Exception):
-        """ Exception causing the server to stop processing and
-            respond with the specified status code.
-        """
-        def __init__(self, code):
-            super().__init__(
-                    f'HTTP {code} {Response.STATUS_MESSAGES[message]}')
-            self.resp = Response(code)
-
-
     class ClientDisconnected(Exception):
+        """ Raised when a client disconnects while the server
+            is waiting for it to transmit.
+        """
         pass
 
 
-    @staticmethod
-    def parse_http_ver(http_ver):
-        """ Parse the HTTP version into major and minor parts.
-
-        eg. HTTP/1.1 --> (1, 1)
-        Returns tuple of ints (ver_maj, ver_min)
-        Raises WebServerException if the format is invalid
-        (including the part before the slash)
-        """
-        slash_split = http_ver.split('/')
-        if len(slash_split) != 2: MyWebServer._bad_request()
-        if slash_split[0] != 'HTTP': MyWebServer._bad_request()
-
-        dot_split = slash_split[1].split('.')
-        if len(dot_split) != 2: MyWebServer._bad_request()
-        try:
-            return int(dot_split[0]), int(dot_split[1])
-        except ValueError:
-            MyWebServer._bad_request()
-
-
-    @staticmethod
-    def guess_content_type(filename):
-        if filename.endswith('.html'):
-            return 'text/html'
-        elif filename.endswith('.css'):
-            return 'text/css'
-        else:
-            return 'text/plain'
-
-
-    @staticmethod
-    def _bad_request():
-        raise MyWebServer.WebServerException(Response.BAD_REQUEST)
-
-
-    @staticmethod
-    def _not_found():
-        raise MyWebServer.WebServerException(Response.NOT_FOUND)
+    class BadRequest(Exception):
+        """ Raised when parsing the client's request fails. """
+        pass
 
 
     def handle(self):
+        self.handler = MyHTTPHandler(WEB_ROOT)
         self.sio = SocketBuffer(self.request)
 
         try:
             req = self._read_request()
-            resp = self._handle_request(req)
+            print(f'{self.client_address[0]}:{self.client_address[1]} '
+                f'{req.method} {req.path}', file=sys.stderr)
+            resp = self.handler.handle_request(req)
 
-            self._send(str(resp))
-        except self.WebServerException as e:
-            self._send(str(e.resp))
+            self._send_response(resp)
+        except self.BadRequest:
+            self._send_response(Response(Response.BAD_REQUEST))
         except self.ClientDisconnected:
             # nothing to do, really
             pass
         except:
             # Try to send a valid response even if something went wrong
-            self._send_line('HTTP/1.1 500 Internal Server Error')
+            print('500 Internal Server Error', file=sys.stderr)
+            self.sio.write('HTTP/1.1 500 Internal Server Error\n\n')
             raise
 
 
-    def _handle_request(self, req):
-        if req.method not in ['GET', 'HEAD']:
-            return Response(Response.METHOD_NOT_ALLOWED)
 
-        # Include the body if method is 'GET', but not if it is 'HEAD'
-        includeBody = (req.method == 'GET')
+    def _send_response(self, resp):
+        """ Write an HTTP response as represented by a Response object
+            to the socket.
 
+        resp: Response
+        """
 
-        # Check the path...
-        if not req.path.startswith('/'):
-            # only local, absolute URLs are valid
-            return Response(Response.NOT_FOUND)
+        assert isinstance(resp, Response)
 
-        # Determine the file path indicated by the URL
-        local_path = os.path.normpath(req.path[1:])
-        if local_path.startswith('/') or local_path.startswith('..'):
-            # don't allow rising above the path root
-            return Response(Response.NOT_FOUND)
-
-        file_path = os.path.join(WEB_ROOT, local_path)
-
-
-        # Serve the content...
-        if os.path.isdir(file_path):
-            # this is a directory
-            if not req.path.endswith('/'):
-                return Response(Response.MOVED_PERMANENTLY,
-                        headers={'Location': req.path + '/'})
-            else:
-                file_path = os.path.join(file_path, 'index.html')
-
-        if not os.path.exists(file_path):
-            # straightforwardly not found
-            return Response(Response.NOT_FOUND)
-
-        # this is a file: return it
-        f = open(file_path)
-        body = f.read()
-        f.close()
-
-        file_name = os.path.basename(file_path)
-        content_type = self.guess_content_type(file_name)
-
-        resp = Response(Response.OK,
-                headers={'Content-Type': f'{content_type}; charset=utf-8'},
-                body=body if includeBody else '')
-        return resp
-
-
-    def _send(self, text):
-        print('> ' + text.strip('\n'))
-        self.sio.write(text)
+        print(f'    {resp.code} {resp.status_message()}', file=sys.stderr)
+        self.sio.write(str(resp))
 
 
     def _recv_line(self):
+        """ Read a line from the socket.
+
+        Returns a line of text (str), with the trailing newline removed.
+
+        Raises ClientDisconnected if the socket has been disconnected
+        from the other side.
+        """
+
         text = self.sio.readline()
         if not text: raise self.ClientDisconnected()
         stripped = text.rstrip('\r\n')
-        print ('< ' + stripped)
         return stripped
-
-
-    def _send_line(self, text=''):
-        self._send(text + '\n')
 
 
     def _read_request(self):
         """ Reads and parses a request message from the socket.
 
         Returns a Request object.
-        Raises an appropriate WebServerException if the request
-        cannot be parsed, is not HTTP/1.1, or has a method other
-        than GET or HEAD.
+        Raises BadRequest if the request cannot be parsed.
+        If the version is not HTTP/1.1, the headers will not be
+        parsed, since their format is not known.
+
+        Request bodies will be ignored.
         """
 
         # Read and parse the request line
         method, path, version = self._read_reqline()
-        if version != (1, 1):
-            raise self.WebServerException(Response.VERSION_NOT_SUPPORTED)
+
+        # Stop early if the version is unsupported
+        if version != HTTPVersion(1, 1): return
 
         # Read and parse the headers
         headers = self._read_headers()
 
-        return Request(method, path, version, headers)
+        # Build a Request object
+        return Request(method, path, version, headers=headers)
 
 
     def _read_reqline(self):
@@ -255,10 +224,8 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
         Empty lines before the request line will be consumed.
 
-        Returns (method: str, path: str,
-            (version_major: int, version_minor: int))
-        Raises an appropriate WebServerException if the request line
-        cannot be parsed.
+        Returns (method: str, path: str, ver: HTTPVersion)
+        Raises BadRequest if the request line cannot be parsed.
         """
 
         # Get the first non-blank line
@@ -268,43 +235,47 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
         # Split into url, path, http version
         parts = requestLine.split(' ')
-        if len(parts) != 3: self._bad_request()
-        method, path, http_ver = parts
+        if len(parts) != 3: raise self.BadRequest()
+        method, path, ver_string = parts
 
         # Parse the http version
-        ver_maj, ver_min = self.parse_http_ver(http_ver)
+        ver = HTTPVersion.parse(ver_string)
 
-        return method, path, (ver_maj, ver_min)
+        return method, path, ver
 
 
     def _read_headers(self):
-        """ Reads and parses a block of header from the socket.
+        """ Reads and parses a block of headers from the socket.
 
         Returns dict mapping header names (str) to values (str).
-        Raises an appropriate WebServerException on parsing error.
+        Raises BadRequest on parsing error.
         """
 
         headers = dict()
         last_header = None
+
         while True:
             # Get the next line
             headerLine = self._recv_line()
-            if len(headerLine.strip()) == 0:
-                # end of headers
-                return headers
+
+            # Stop at end of headers
+            if len(headerLine.strip()) == 0: return headers
+
             if headerLine.startswith(' ') or headerLine.startswith('\t'):
-                # this is a continuation line
-                if last_header is None: self._bad_request()
+                # Merge continuation lines with the current header's value
+                if last_header is None: raise self.BadRequest()
                 headers[last_header] += ' ' + headerLine.strip()
             else:
+                # Separate header into name and value
                 parts = headerLine.split(':', 1)
-                if len(parts) != 2: self._bad_request()
+                if len(parts) != 2: raise self.BadRequest()
                 last_header, value = parts
+
                 if last_header in headers:
-                    # duplicate header: merge the values
+                    # Merge values of duplicate headers
                     headers[last_header] += ',' + value.strip()
                 else:
-                    # entirely new header
+                    # Create an entirely new header
                     headers[last_header] = value.strip()
 
 
