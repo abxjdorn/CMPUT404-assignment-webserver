@@ -7,6 +7,9 @@ from myhttp import Request, Response, HTTPVersion
 from socketio import SocketBuffer
 
 
+LOG_REQUESTS = False
+
+
 # Copyright 2020 Abram Hindle, Eddie Antonio Santos, John Dorn
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -154,10 +157,11 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
         try:
             req = self._read_request()
-            print(('{}:{} {} {}').format(
-                self.client_address[0],
-                self.client_address[1],
-                req.method, req.path), file=sys.stderr)
+            if LOG_REQUESTS:
+                print(('{}:{} {} {}').format(
+                    self.client_address[0],
+                    self.client_address[1],
+                    req.method, req.path), file=sys.stderr)
             resp = self.handler.handle_request(req)
         except self.BadRequest:
             resp = Response(Response.BAD_REQUEST)
@@ -166,7 +170,8 @@ class MyWebServer(socketserver.BaseRequestHandler):
             return
         except:
             # Try to send a valid response even if something went wrong
-            print('500 Internal Server Error', file=sys.stderr)
+            if LOG_REQUESTS:
+                print('500 Internal Server Error', file=sys.stderr)
             self.sio.write('HTTP/1.1 500 Internal Server Error\n\n')
             raise
 
@@ -192,8 +197,9 @@ class MyWebServer(socketserver.BaseRequestHandler):
         resp.attach_header('Date', ftime)
 
         # write
-        print('    {} {}'.format(
-            resp.code, resp.status_message()), file=sys.stderr)
+        if LOG_REQUESTS:
+            print('    {} {}'.format(
+                resp.code, resp.status_message()), file=sys.stderr)
         self.sio.write(str(resp))
 
 
