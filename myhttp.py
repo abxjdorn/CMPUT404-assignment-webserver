@@ -56,11 +56,11 @@ class HTTPVersion:
 
 
     def __str__(self):
-        return f'HTTP/{self.major}.{self.minor}'
+        return 'HTTP/' + str(self.major) + '.' + str(self.minor)
 
 
     def __repr__(self):
-        return f'HTTPVersion({self.major}, {self.minor})'
+        return 'HTTPVersion(' + str(self.major) + ', ' + str(self.minor) + ')'
 
 
 class Message:
@@ -111,7 +111,8 @@ class Message:
 
     def __str__(self):
         return (self._message_line() + '\n'
-                + '\n'.join(f'{k}: {v}' for k, v in self.headers.items())
+                + '\n'.join('{}: {}'.format(k, v)
+                    for k, v in self.headers.items())
                 + '\n\n'
                 + self.body)
 
@@ -139,7 +140,7 @@ class Request(Message):
 
 
     def _message_line(self):
-        return f'{self.method} {self.path} {self.ver}'
+        return '{} {} {}'.format(self.method, self.path, self.ver)
 
 
 class Response(Message):
@@ -185,7 +186,7 @@ class Response(Message):
 
 
     def _message_line(self):
-        return f'{self.ver} {self.code} {self.status_message()}'
+        return '{} {} {}'.format(self.ver, self.code, self.status_message())
 
 
 def guess_content_type(filename):

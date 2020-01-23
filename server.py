@@ -61,7 +61,7 @@ class MyHTTPHandler:
         # Respond with 505 to unsupported methods
         if req.method not in ['GET', 'HEAD']:
             return Response(Response.METHOD_NOT_ALLOWED,
-                    headers={'Allow', 'GET, HEAD'})
+                    headers={'Allow': 'GET, HEAD'})
 
         # Fail if the URL is not a local, absolute path
         if not req.path.startswith('/'):
@@ -154,8 +154,10 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
         try:
             req = self._read_request()
-            print(f'{self.client_address[0]}:{self.client_address[1]} '
-                f'{req.method} {req.path}', file=sys.stderr)
+            print(('{}:{} {} {}').format(
+                self.client_address[0],
+                self.client_address[1],
+                req.method, req.path), file=sys.stderr)
             resp = self.handler.handle_request(req)
         except self.BadRequest:
             resp = Response(Response.BAD_REQUEST)
@@ -190,7 +192,8 @@ class MyWebServer(socketserver.BaseRequestHandler):
         resp.attach_header('Date', ftime)
 
         # write
-        print(f'    {resp.code} {resp.status_message()}', file=sys.stderr)
+        print('    {} {}'.format(
+            resp.code, resp.status_message()), file=sys.stderr)
         self.sio.write(str(resp))
 
 
