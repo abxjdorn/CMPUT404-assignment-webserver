@@ -86,6 +86,21 @@ class Message:
         self.body = body or ''
 
 
+    def attach_header(self, header, value):
+        """ Attach a header to an existing request.
+
+        header: str -- header name
+        value: str -- header value
+
+        If the header already exists, it will be merged with the new value.
+        """
+
+        if header in self.headers.keys():
+            self.headers[header] += ', ' + value
+        else:
+            self.headers[header] = value
+
+
     def _message_line(self):
         """ Generates the "message line": the first line of the message.
 

@@ -1,6 +1,6 @@
 #  coding: utf-8 
 import socketserver
-import sys, os
+import sys, os, time
 
 import myhttp
 from myhttp import Request, Response, HTTPVersion
@@ -60,7 +60,8 @@ class MyHTTPHandler:
 
         # Respond with 505 to unsupported methods
         if req.method not in ['GET', 'HEAD']:
-            return Response(Response.METHOD_NOT_ALLOWED)
+            return Response(Response.METHOD_NOT_ALLOWED,
+                    headers={'Allow', 'GET, HEAD'})
 
         # Fail if the URL is not a local, absolute path
         if not req.path.startswith('/'):
@@ -117,13 +118,18 @@ class MyHTTPHandler:
         else:
             body = ''
 
+        content_length = len(body)
+
         # Guess the content-type
         file_name = os.path.basename(path)
         content_type = myhttp.guess_content_type(file_name)
 
         # Generate a response
         return Response(Response.OK,
-                headers={'Content-Type': content_type},
+                headers={
+                    'Content-Type': content_type,
+                    'Content-Length': content_length
+                },
                 body=body)
 
 
@@ -151,19 +157,22 @@ class MyWebServer(socketserver.BaseRequestHandler):
             print(f'{self.client_address[0]}:{self.client_address[1]} '
                 f'{req.method} {req.path}', file=sys.stderr)
             resp = self.handler.handle_request(req)
-
-            self._send_response(resp)
         except self.BadRequest:
-            self._send_response(Response(Response.BAD_REQUEST))
+            resp = Response(Response.BAD_REQUEST)
         except self.ClientDisconnected:
             # nothing to do, really
-            pass
+            return
         except:
             # Try to send a valid response even if something went wrong
             print('500 Internal Server Error', file=sys.stderr)
             self.sio.write('HTTP/1.1 500 Internal Server Error\n\n')
             raise
 
+        # Attach required header
+        resp.attach_header('Connection', 'close')
+
+        # send
+        self._send_response(resp)
 
 
     def _send_response(self, resp):
@@ -175,6 +184,12 @@ class MyWebServer(socketserver.BaseRequestHandler):
 
         assert isinstance(resp, Response)
 
+        # Attach the current date
+        gmt_now = time.gmtime()
+        ftime = time.strftime('%a, %d %b %Y %H:%M:%S GMT', gmt_now)
+        resp.attach_header('Date', ftime)
+
+        # write
         print(f'    {resp.code} {resp.status_message()}', file=sys.stderr)
         self.sio.write(str(resp))
 
