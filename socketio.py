@@ -40,13 +40,3 @@ class SocketIO(io.RawIOBase):
 
     def writable(self):
         return True
-
-
-class SocketBuffer(io.TextIOWrapper):
-    """ Self-configuring TextIOWrapper around a socket. """
-
-    def __init__(self, socket):
-        super().__init__(io.BufferedRWPair(
-            SocketIO(socket),
-            SocketIO(socket)),
-            newline='\r\n', line_buffering=True)

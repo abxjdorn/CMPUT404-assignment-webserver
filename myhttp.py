@@ -13,6 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# This file implements concepts from the HTTP/1.1 specification
+# (RFC 2161, https://www.ietf.org/rfc/rfc2616.txt)
+
+
+class ParseError(Exception):
+    """ Raised on parsing failure. """
+    pass
+
 
 class HTTPVersion:
     """ Representation of an HTTP protocol version, eg. HTTP/1.1 """
@@ -59,6 +67,10 @@ class HTTPVersion:
         return 'HTTP/' + str(self.major) + '.' + str(self.minor)
 
 
+    def __bytes__(self):
+        return bytes(str(self), encoding='ascii')
+
+
     def __repr__(self):
         return 'HTTPVersion(' + str(self.major) + ', ' + str(self.minor) + ')'
 
@@ -68,22 +80,58 @@ class Message:
         between Request and Response.
     """
 
+    @staticmethod
+    def read_headers_from(lines):
+        """ Reads and parses a block of headers from an iterable of lines.
+
+        Returns dict mapping header names (str) to values (str).
+        Raises ParseError on parsing error.
+        """
+
+        headers = dict()
+        last_header = None
+
+        while True:
+            # Get the next line
+            headerLine = next(lines)
+
+            # Stop at end of headers
+            if len(headerLine.strip()) == 0: return headers
+
+            if headerLine.startswith(' ') or headerLine.startswith('\t'):
+                # Merge continuation lines with the current header's value
+                if last_header is None: raise self.ParseError()
+                headers[last_header] += ' ' + headerLine.strip()
+            else:
+                # Separate header into name and value
+                parts = headerLine.split(':', 1)
+                if len(parts) != 2: raise self.ParseError()
+                last_header, value = parts
+
+                if last_header in headers:
+                    # Merge values of duplicate headers
+                    headers[last_header] += ',' + value.strip()
+                else:
+                    # Create an entirely new header
+                    headers[last_header] = value.strip()
+
+
     def __init__(self, ver=None, headers=None, body=None):
         """ Initialize data shared between request and response.
 
         ver: HTTPVersion -- HTTPVersion specified by response;
                             defaults to HTTP/1.1
         headers: dict -- headers of the response; defaults to empty dict
-        body: str -- body content of the response; defaults to empty str
+        body: bytes -- body content of the response; defaults to empty
         """
 
         assert ver is None or isinstance(ver, HTTPVersion)
         assert headers is None or isinstance(headers, dict)
-        assert body is None or isinstance(body, str)
+        assert body is None or isinstance(body, bytes)
 
         self.ver = ver or HTTPVersion(1, 1)
         self.headers = headers or dict()
-        self.body = body or ''
+        self.body = body or b''
 
 
     def attach_header(self, header, value):
@@ -109,16 +157,76 @@ class Message:
         raise NotImplementedError()
 
 
+    def __bytes__(self):
+        return (bytes(self._message_line() + '\r\n'
+                + '\r\n'.join('{}: {}'.format(k, v)
+                    for k, v in self.headers.items())
+                + '\r\n\r\n', encoding='ascii')
+                + self.body)
+
+
     def __str__(self):
         return (self._message_line() + '\n'
                 + '\n'.join('{}: {}'.format(k, v)
                     for k, v in self.headers.items())
                 + '\n\n'
-                + self.body)
+                + str(self.body))
 
 
 class Request(Message):
     """ An HTTP request. """
+
+    @staticmethod
+    def read_from(lines):
+        """ Reads and parses a request message from an iterable of lines.
+
+        Returns a Request object.
+        Raises ParseError if the request cannot be parsed.
+        If the version is not HTTP/1.1, the headers will not be
+        parsed, since their format is not known.
+
+        Request bodies will be ignored.
+        """
+
+        # Read and parse the request line
+        method, path, version = Request._read_reqline(lines)
+
+        # Stop early if the version is unsupported
+        if version != HTTPVersion(1, 1): return
+
+        # Read and parse the headers
+        headers = Message.read_headers_from(lines)
+
+        # Build a Request object
+        return Request(method, path, version, headers=headers)
+
+
+    @staticmethod
+    def _read_reqline(lines):
+        """ Reads and parses a request line (the first line of a request)
+            from an iterable of lines.
+
+        Empty lines before the request line will be consumed.
+
+        Returns (method: str, path: str, ver: HTTPVersion)
+        Raises ParseError if the request line cannot be parsed.
+        """
+
+        # Get the first non-blank line
+        requestLine = ''
+        while not requestLine:
+            requestLine = next(lines)
+
+        # Split into url, path, http version
+        parts = requestLine.split(' ')
+        if len(parts) != 3: raise self.ParseError()
+        method, path, ver_string = parts
+
+        # Parse the http version
+        ver = HTTPVersion.parse(ver_string)
+
+        return method, path, ver
+
 
     def __init__(self, method, path, ver=None, headers=None, body=None):
         """ Create an HTTP request.

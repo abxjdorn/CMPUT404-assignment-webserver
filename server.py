@@ -1,13 +1,14 @@
 #  coding: utf-8 
 import socketserver
-import sys, os, time
+import sys, os, io, time
 
 import myhttp
 from myhttp import Request, Response, HTTPVersion
-from socketio import SocketBuffer
+from socketio import SocketIO
 
 
-LOG_REQUESTS = False
+LOG_REQUESTS = False # set to True to log requests/responses to stderr
+WEB_ROOT = 'www/' # local directory corresponding to URL path root
 
 
 # Copyright 2020 Abram Hindle, Eddie Antonio Santos, John Dorn
@@ -35,8 +36,6 @@ LOG_REQUESTS = False
 
 # try: curl -v -X GET http://127.0.0.1:8080/
 
-
-WEB_ROOT = 'www/'
 
 
 class MyHTTPHandler:
@@ -115,7 +114,7 @@ class MyHTTPHandler:
 
         # Read the content
         if include_body:
-            f = open(path)
+            f = open(path, mode='rb')
             body = f.read()
             f.close()
         else:
@@ -146,24 +145,41 @@ class MyWebServer(socketserver.BaseRequestHandler):
         pass
 
 
-    class BadRequest(Exception):
-        """ Raised when parsing the client's request fails. """
-        pass
+    class SocketIterator:
+        """ Decoding iterator over a SocketBuffer yielding lines. """
+        def __init__(self, sio):
+            self.sio = io.TextIOWrapper(
+                    io.BufferedReader(sio), newline='\r\n')
+
+
+        def __next__(self):
+            """ Read a line from the socket.
+
+            Returns a line of text (str), with the trailing newline removed.
+
+            Raises ClientDisconnected if the socket has been disconnected
+            from the other side.
+            """
+
+            text = self.sio.readline()
+            if not text: raise self.ClientDisconnected()
+            stripped = text.rstrip('\r\n')
+            return stripped
 
 
     def handle(self):
         self.handler = MyHTTPHandler(WEB_ROOT)
-        self.sio = SocketBuffer(self.request)
+        self.sio = SocketIO(self.request)
 
         try:
-            req = self._read_request()
+            req = Request.read_from(self.SocketIterator(self.sio))
             if LOG_REQUESTS:
                 print(('{}:{} {} {}').format(
                     self.client_address[0],
                     self.client_address[1],
                     req.method, req.path), file=sys.stderr)
             resp = self.handler.handle_request(req)
-        except self.BadRequest:
+        except myhttp.ParseError:
             resp = Response(Response.BAD_REQUEST)
         except self.ClientDisconnected:
             # nothing to do, really
@@ -172,7 +188,7 @@ class MyWebServer(socketserver.BaseRequestHandler):
             # Try to send a valid response even if something went wrong
             if LOG_REQUESTS:
                 print('500 Internal Server Error', file=sys.stderr)
-            self.sio.write('HTTP/1.1 500 Internal Server Error\n\n')
+            self.sio.write(b'HTTP/1.1 500 Internal Server Error\r\n')
             raise
 
         # Attach required header
@@ -200,108 +216,7 @@ class MyWebServer(socketserver.BaseRequestHandler):
         if LOG_REQUESTS:
             print('    {} {}'.format(
                 resp.code, resp.status_message()), file=sys.stderr)
-        self.sio.write(str(resp))
-
-
-    def _recv_line(self):
-        """ Read a line from the socket.
-
-        Returns a line of text (str), with the trailing newline removed.
-
-        Raises ClientDisconnected if the socket has been disconnected
-        from the other side.
-        """
-
-        text = self.sio.readline()
-        if not text: raise self.ClientDisconnected()
-        stripped = text.rstrip('\r\n')
-        return stripped
-
-
-    def _read_request(self):
-        """ Reads and parses a request message from the socket.
-
-        Returns a Request object.
-        Raises BadRequest if the request cannot be parsed.
-        If the version is not HTTP/1.1, the headers will not be
-        parsed, since their format is not known.
-
-        Request bodies will be ignored.
-        """
-
-        # Read and parse the request line
-        method, path, version = self._read_reqline()
-
-        # Stop early if the version is unsupported
-        if version != HTTPVersion(1, 1): return
-
-        # Read and parse the headers
-        headers = self._read_headers()
-
-        # Build a Request object
-        return Request(method, path, version, headers=headers)
-
-
-    def _read_reqline(self):
-        """ Reads and parses a request line (the first line of a request)
-            from the socket.
-
-        Empty lines before the request line will be consumed.
-
-        Returns (method: str, path: str, ver: HTTPVersion)
-        Raises BadRequest if the request line cannot be parsed.
-        """
-
-        # Get the first non-blank line
-        requestLine = ''
-        while not requestLine:
-            requestLine = self._recv_line()
-
-        # Split into url, path, http version
-        parts = requestLine.split(' ')
-        if len(parts) != 3: raise self.BadRequest()
-        method, path, ver_string = parts
-
-        # Parse the http version
-        ver = HTTPVersion.parse(ver_string)
-
-        return method, path, ver
-
-
-    def _read_headers(self):
-        """ Reads and parses a block of headers from the socket.
-
-        Returns dict mapping header names (str) to values (str).
-        Raises BadRequest on parsing error.
-        """
-
-        headers = dict()
-        last_header = None
-
-        while True:
-            # Get the next line
-            headerLine = self._recv_line()
-
-            # Stop at end of headers
-            if len(headerLine.strip()) == 0: return headers
-
-            if headerLine.startswith(' ') or headerLine.startswith('\t'):
-                # Merge continuation lines with the current header's value
-                if last_header is None: raise self.BadRequest()
-                headers[last_header] += ' ' + headerLine.strip()
-            else:
-                # Separate header into name and value
-                parts = headerLine.split(':', 1)
-                if len(parts) != 2: raise self.BadRequest()
-                last_header, value = parts
-
-                if last_header in headers:
-                    # Merge values of duplicate headers
-                    headers[last_header] += ',' + value.strip()
-                else:
-                    # Create an entirely new header
-                    headers[last_header] = value.strip()
-
+        self.sio.write(bytes(resp))
 
 
 if __name__ == "__main__":
