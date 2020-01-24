@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # This file implements concepts from the HTTP/1.1 specification
-# (RFC 2161, https://www.ietf.org/rfc/rfc2616.txt)
+# (RFC 2616, https://www.ietf.org/rfc/rfc2616.txt)
 
 
 class ParseError(Exception):
